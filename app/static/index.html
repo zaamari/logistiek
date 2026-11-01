@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leverplanner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://cdn.tailwindcss.com/3.4.16"></script>
+  <script>tailwind.config = { theme: { extend: { fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] } } } }</script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  <style type="text/tailwindcss">
+    [x-cloak] { display: none !important; }
+    .map-tiles { filter: grayscale(0.85) brightness(1.04); }
+    body { background: #f6f7f9; }
+    .field { @apply w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100; }
+    .btn { @apply inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition disabled:opacity-50; }
+    .btn-ghost { @apply btn border border-slate-200 bg-white text-slate-700 hover:bg-slate-50; }
+    .btn-primary { @apply btn bg-slate-900 text-white hover:bg-slate-700; }
+    .card { @apply rounded-2xl border border-slate-200/80 bg-white shadow-sm; }
+    .stop-num { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 999px; color: #fff;
+                font: 600 11px Inter, sans-serif; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+    .pin { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; color: #fff;
+           font: 700 12px Inter, sans-serif; background: #0f172a; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+    @media print {
+      .no-print { display: none !important; }
+      body { background: #fff; }
+      .card { box-shadow: none; break-inside: avoid; }
+    }
+  </style>
+</head>
+<body class="font-sans text-slate-800 antialiased" x-data="planner()" x-init="init()">
+
+  <!-- Kopbalk -->
+  <header class="no-print sticky top-0 z-[1000] border-b border-slate-200 bg-white/85 backdrop-blur">
+    <div class="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
+      <div class="flex items-center gap-2.5">
+        <div class="grid h-8 w-8 place-items-center rounded-lg bg-slate-900 text-white">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h11v9H3z"/><path d="M14 10h4l3 3v3h-7"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/></svg>
+        </div>
+        <span class="text-[15px] font-semibold tracking-tight">Leverplanner</span>
+      </div>
+      <button class="btn-ghost" @click="settingsOpen = true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        Instellingen
+      </button>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-7xl space-y-6 px-4 py-6">
+
+    <!-- Melding: instellingen ontbreken -->
+    <div x-cloak x-show="!settings.start_address || !settings.loods_address"
+         class="no-print flex items-center justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      <span>Vul eerst je startadres en loodsadres in.</span>
+      <button class="font-medium underline" @click="settingsOpen = true">Naar instellingen</button>
+    </div>
+
+    <!-- Bestellingen -->
+    <section class="card no-print">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+        <div>
+          <h2 class="text-base font-semibold">Bestellingen</h2>
+          <p class="text-sm text-slate-500">
+            <span x-text="orders.filter(o => o.address).length"></span> adressen ·
+            <span x-text="totalCrates"></span> kratten ·
+            minimaal <span x-text="minLoads"></span> <span x-text="minLoads === 1 ? 'rit' : 'ritten'"></span>
+          </p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <a class="btn-ghost" href="/api/template">Sjabloon</a>
+          <label class="btn-ghost cursor-pointer">
+            Excel importeren
+            <input type="file" accept=".xlsx,.xlsm" class="hidden" @change="importExcel($event)">
+          </label>
+          <button class="btn-ghost text-slate-500" @click="clearAll()" x-show="orders.length">Wissen</button>
+        </div>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[820px] text-sm">
+          <thead>
+            <tr class="text-left text-xs font-medium uppercase tracking-wide text-slate-400">
+              <th class="w-10 py-2.5 pl-5">#</th>
+              <th class="py-2.5 pr-2">Klant</th>
+              <th class="py-2.5 pr-2">Adres</th>
+              <th class="w-20 py-2.5 pr-2">Kratten</th>
+              <th class="w-44 py-2.5 pr-2">Splitsen</th>
+              <th class="w-52 py-2.5 pr-2">Tijdvenster</th>
+              <th class="w-10 py-2.5 pr-4"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="(o, i) in orders" :key="o.id">
+              <tr class="border-t border-slate-100">
+                <td class="py-2 pl-5 text-slate-400" x-text="i + 1"></td>
+                <td class="py-2 pr-2"><input class="field" x-model="o.name" placeholder="Naam"></td>
+                <td class="py-2 pr-2"><input class="field" x-model="o.address" placeholder="Straat 1, Plaats"></td>
+                <td class="py-2 pr-2"><input class="field text-center" type="number" min="1" x-model.number="o.crates"></td>
+                <td class="py-2 pr-2">
+                  <div class="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                    <template x-for="opt in [['?','Weet niet'],['ja','Ja'],['nee','Nee']]">
+                      <button class="rounded-md px-2.5 py-1 text-xs font-medium transition"
+                              :class="o.split === opt[0] ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'"
+                              @click="o.split = opt[0]" x-text="opt[1]"></button>
+                    </template>
+                  </div>
+                </td>
+                <td class="py-2 pr-2">
+                  <div class="flex items-center gap-1.5">
+                    <input class="field" type="time" x-model="o.window_start">
+                    <span class="text-slate-300">–</span>
+                    <input class="field" type="time" x-model="o.window_end">
+                  </div>
+                </td>
+                <td class="py-2 pr-4 text-right">
+                  <button class="rounded-md p-1.5 text-slate-300 hover:bg-slate-100 hover:text-slate-600" @click="orders.splice(i, 1)" title="Verwijderen">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  </button>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-5 py-4">
+        <button class="btn-ghost" @click="addRow()">+ Bestelling</button>
+        <button class="btn-primary px-5" :disabled="loading || !orders.some(o => o.address)" @click="calculate()">
+          <svg x-show="loading" class="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg>
+          <span x-text="loading ? 'Bezig met rekenen…' : 'Plan berekenen'"></span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Fout -->
+    <div x-cloak x-show="error" class="no-print rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800" x-text="error"></div>
+
+    <!-- Resultaat -->
+    <template x-if="result">
+      <section class="space-y-4">
+        <!-- Advies -->
+        <div class="card flex flex-wrap items-center gap-x-6 gap-y-3 px-5 py-4"
+             :class="result.compare.ask.length ? 'border-emerald-200 bg-emerald-50/60' : ''">
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-semibold" x-text="result.compare.ask.length ? 'Splitsen loont' : 'Advies'"></p>
+            <p class="text-sm text-slate-600" x-text="result.compare.message"></p>
+            <p class="mt-1 text-sm text-slate-600" x-show="result.compare.reloads_saved > 0">
+              Dat scheelt <b x-text="result.compare.reloads_saved"></b>× terug naar de loods.
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-1.5" x-show="result.compare.ask.length">
+            <template x-for="id in result.compare.ask">
+              <span class="rounded-full border border-emerald-300 bg-white px-2.5 py-1 text-xs font-medium text-emerald-800"
+                    x-text="orderName(id)"></span>
+            </template>
+          </div>
+        </div>
+        <template x-for="w in result.warnings">
+          <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-900" x-text="w"></div>
+        </template>
+
+        <!-- Scenario keuze -->
+        <div class="no-print grid gap-3 sm:grid-cols-2" x-show="!result.compare.same">
+          <template x-for="key in ['nosplit', 'split']">
+            <button class="card px-5 py-3.5 text-left transition"
+                    :class="active === key ? 'ring-2 ring-slate-900' : 'hover:border-slate-300'"
+                    @click="active = key; $nextTick(() => drawMap())">
+              <p class="text-sm font-semibold" x-text="key === 'split' ? 'Met splitsen' : 'Zonder splitsen'"></p>
+              <p class="text-sm text-slate-500">
+                klaar <span x-text="fmt(result.scenarios[key].finish)"></span> ·
+                <span x-text="result.scenarios[key].trips.length"></span> ritten ·
+                <span x-text="dur(result.scenarios[key].work_time)"></span> werk
+              </p>
+            </button>
+          </template>
+        </div>
+
+        <!-- Kerncijfers -->
+        <div class="grid grid-cols-2 gap-3 md:grid-cols-5">
+          <template x-for="s in stats()">
+            <div class="card px-4 py-3">
+              <p class="text-xs font-medium uppercase tracking-wide text-slate-400" x-text="s[0]"></p>
+              <p class="mt-1 text-xl font-semibold tabular-nums" x-text="s[1]"></p>
+              <p class="text-xs text-slate-500" x-text="s[2]"></p>
+            </div>
+          </template>
+        </div>
+
+        <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <!-- Ritten -->
+          <div class="space-y-3">
+            <div class="no-print flex flex-wrap gap-2">
+              <button class="btn-ghost" @click="exportExcel()">Exporteer naar Excel</button>
+              <button class="btn-ghost" @click="window.print()">Afdrukken</button>
+              <button class="btn-ghost" @click="adoptWindows()" x-show="scenario().trips.some(t => t.stops.some(s => s.suggested))"
+                      title="Zet de voorgestelde tijdvensters vast in de bestellingen">Vensters overnemen</button>
+            </div>
+            <template x-for="trip in scenario().trips" :key="active + trip.nr">
+              <div class="card overflow-hidden">
+                <div class="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+                  <div class="flex items-center gap-3">
+                    <span class="h-7 w-1.5 rounded-full" :style="`background:${color(trip.nr)}`"></span>
+                    <div>
+                      <p class="text-sm font-semibold">Rit <span x-text="trip.nr"></span>
+                        <span class="font-normal text-slate-500">· <span x-text="trip.load"></span> kratten</span></p>
+                      <p class="text-xs text-slate-500">
+                        <span x-text="trip.from === 'start' ? 'Start' : 'Loods'"></span> <span x-text="fmt(trip.depart)"></span>
+                        → Loods <span x-text="fmt(trip.arrive_loods)"></span>
+                      </p>
+                    </div>
+                  </div>
+                  <a class="no-print btn-ghost px-2.5 py-1.5 text-xs" :href="trip.maps_url" target="_blank" rel="noopener">Navigatie ↗</a>
+                </div>
+                <ol>
+                  <template x-for="s in trip.stops">
+                    <li class="flex gap-3 border-b border-slate-50 px-4 py-2.5 last:border-0">
+                      <span class="w-11 shrink-0 pt-0.5 text-sm font-semibold tabular-nums" x-text="fmt(s.arrive)"></span>
+                      <div class="min-w-0 flex-1">
+                        <p class="truncate text-sm font-medium" x-text="s.name"></p>
+                        <p class="truncate text-xs text-slate-500" x-text="s.address"></p>
+                        <div class="mt-1 flex flex-wrap gap-1.5 text-[11px] font-medium">
+                          <span class="rounded bg-slate-100 px-1.5 py-0.5 text-slate-700"
+                                x-text="s.partial ? `${s.crates} van ${s.of} kratten` : `${s.crates} ${s.crates === 1 ? 'krat' : 'kratten'}`"></span>
+                          <span x-show="s.window" class="rounded px-1.5 py-0.5"
+                                :class="s.late ? 'bg-red-100 text-red-700' : s.suggested ? 'border border-dashed border-slate-300 text-slate-500' : 'bg-sky-50 text-sky-700'"
+                                x-text="s.window ? `${s.suggested ? 'voorstel ' : ''}${fmt(s.window[0])}–${fmt(s.window[1])}${s.late ? ' · te laat' : ''}` : ''"></span>
+                          <span x-show="s.wait" class="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700" x-text="`${s.wait} min wachten`"></span>
+                        </div>
+                      </div>
+                      <span class="shrink-0 pt-0.5 text-xs text-slate-400 tabular-nums" x-text="`${s.drive} min rijden`"></span>
+                    </li>
+                  </template>
+                </ol>
+              </div>
+            </template>
+          </div>
+
+          <!-- Kaart -->
+          <div class="no-print">
+            <div class="card sticky top-20 overflow-hidden">
+              <div id="map" class="h-[560px] w-full"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </template>
+  </main>
+
+  <!-- Instellingen -->
+  <div x-cloak x-show="settingsOpen" class="fixed inset-0 z-[2000]" @keydown.escape.window="settingsOpen = false">
+    <div class="absolute inset-0 bg-slate-900/30" @click="settingsOpen = false" x-transition.opacity></div>
+    <aside class="absolute right-0 top-0 flex h-full w-full max-w-md flex-col bg-white shadow-xl"
+           x-show="settingsOpen" x-transition:enter="transition duration-200" x-transition:enter-start="translate-x-full">
+      <div class="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+        <h2 class="text-base font-semibold">Instellingen</h2>
+        <button class="rounded-md p-1.5 text-slate-400 hover:bg-slate-100" @click="settingsOpen = false">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="flex-1 space-y-5 overflow-y-auto px-5 py-5 text-sm">
+        <div class="space-y-3">
+          <label class="block"><span class="mb-1 block font-medium">Startlocatie</span>
+            <input class="field" x-model="settings.start_address" placeholder="Straat 1, Plaats"></label>
+          <label class="block"><span class="mb-1 block font-medium">Loods</span>
+            <input class="field" x-model="settings.loods_address" placeholder="Straat 1, Plaats"></label>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block"><span class="mb-1 block font-medium">Aankomst eerste klant</span>
+            <input class="field" type="time" x-model="settings.first_arrival"></label>
+          <label class="block"><span class="mb-1 block font-medium">Kratten per rit</span>
+            <input class="field" type="number" min="1" x-model.number="settings.capacity"></label>
+          <label class="block"><span class="mb-1 block font-medium">Laden in loods</span>
+            <div class="relative"><input class="field pr-12" type="number" min="0" x-model.number="settings.load_minutes"><span class="absolute right-3 top-1.5 text-slate-400">min</span></div></label>
+          <label class="block"><span class="mb-1 block font-medium">Rekentijd</span>
+            <div class="relative"><input class="field pr-12" type="number" min="1" max="60" x-model.number="settings.time_limit"><span class="absolute right-3 top-1.5 text-slate-400">sec</span></div></label>
+          <label class="block"><span class="mb-1 block font-medium">Lossen eerste krat</span>
+            <div class="relative"><input class="field pr-12" type="number" min="0" x-model.number="settings.unload_first"><span class="absolute right-3 top-1.5 text-slate-400">min</span></div></label>
+          <label class="block"><span class="mb-1 block font-medium">Elke volgende krat</span>
+            <div class="relative"><input class="field pr-12" type="number" min="0" x-model.number="settings.unload_extra"><span class="absolute right-3 top-1.5 text-slate-400">min</span></div></label>
+        </div>
+        <p class="rounded-lg bg-slate-50 px-3 py-2.5 text-xs leading-relaxed text-slate-500">
+          De rit van je startlocatie naar de eerste klant telt niet mee: je bent om de ingestelde tijd bij de eerste klant
+          en vertrekt zo vroeg als nodig. Daardoor begint de planner bij voorkeur bij een verre klant.
+        </p>
+      </div>
+      <div class="border-t border-slate-100 px-5 py-4">
+        <button class="btn-primary w-full justify-center" @click="saveSettings()">Opslaan</button>
+      </div>
+    </aside>
+  </div>
+
+<script>
+const COLORS = ['#2563eb', '#16a34a', '#ea580c', '#9333ea', '#db2777', '#0891b2', '#ca8a04', '#4f46e5', '#dc2626', '#0d9488'];
+let map, layer;
+
+function newOrder(data = {}) {
+  return { id: crypto.randomUUID(), name: '', address: '', crates: 1, split: '?', window_start: '', window_end: '', ...data };
+}
+
+function store(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+}
+function load(key) {
+  try { return JSON.parse(localStorage.getItem(key)); } catch (e) { return null; }
+}
+
+function planner() {
+  return {
+    settings: {}, settingsOpen: false,
+    orders: [], result: null, active: 'nosplit', loading: false, error: '',
+
+    async init() {
+      this.settings = await (await fetch('/api/settings')).json();
+      this.orders = load('orders') || [newOrder(), newOrder(), newOrder()];
+      this.$watch('orders', v => store('orders', v));
+    },
+
+    get totalCrates() { return this.orders.filter(o => o.address).reduce((n, o) => n + (+o.crates || 0), 0); },
+    get minLoads() { return Math.ceil(this.totalCrates / (this.settings.capacity || 6)); },
+
+    addRow() { this.orders.push(newOrder()); },
+    clearAll() {
+      if (confirm('Alle bestellingen wissen?')) { this.orders = [newOrder()]; this.result = null; }
+    },
+
+    async saveSettings() {
+      const r = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.settings) });
+      this.settings = await r.json();
+      this.settingsOpen = false;
+    },
+
+    async importExcel(e) {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      const body = new FormData();
+      body.append('file', file);
+      const r = await fetch('/api/import', { method: 'POST', body });
+      const data = await r.json();
+      if (!r.ok) { this.error = data.detail; return; }
+      const filled = this.orders.filter(o => o.address);
+      if (filled.length && !confirm(`${data.orders.length} bestellingen gevonden. Huidige lijst vervangen?`)) {
+        this.orders = [...filled, ...data.orders.map(newOrder)];
+      } else {
+        this.orders = data.orders.map(newOrder);
+      }
+      this.error = '';
+      this.result = null;
+    },
+
+    async calculate() {
+      this.loading = true;
+      this.error = '';
+      try {
+        const r = await fetch('/api/plan', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orders: this.orders, settings: this.settings }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Er ging iets mis bij het rekenen.');
+        this.result = data;
+        this.active = data.compare.same ? 'nosplit' : 'split';
+        this.$nextTick(() => this.drawMap());
+      } catch (e) {
+        this.error = e.message;
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async exportExcel() {
+      const r = await fetch('/api/export', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.result) });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(await r.blob());
+      a.download = `planning-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.click();
+    },
+
+    adoptWindows() {
+      for (const trip of this.scenario().trips) for (const s of trip.stops) {
+        const o = this.orders.find(o => o.id === s.id);
+        if (o && s.suggested) { o.window_start = this.fmt(s.window[0]); o.window_end = this.fmt(s.window[1]); }
+      }
+    },
+
+    scenario() { return this.result.scenarios[this.active]; },
+    orderName(id) { return (this.result.orders.find(o => o.id === id) || {}).name || id; },
+    color(nr) { return COLORS[(nr - 1) % COLORS.length]; },
+    fmt(m) { return m == null ? '–' : `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; },
+    dur(m) { return m == null ? '–' : `${Math.floor(m / 60)}u ${String(m % 60).padStart(2, '0')}m`; },
+
+    stats() {
+      const s = this.scenario();
+      return [
+        ['Vertrek', this.fmt(s.departure), 'vanaf startlocatie'],
+        ['Eerste klant', this.fmt(s.first_arrival), 'aankomst'],
+        ['Klaar', this.fmt(s.finish), 'in de loods'],
+        ['Ritten', s.trips.length, `${s.reloads}× naar loods · min. ${s.min_loads}`],
+        ['Werktijd', this.dur(s.work_time), `${this.dur(s.drive_time)} rijden`],
+      ];
+    },
+
+    drawMap() {
+      const el = document.getElementById('map');
+      if (!el) return;
+      if (!map || map.getContainer() !== el) {
+        if (map) map.remove();
+        map = L.map(el, { zoomControl: true });
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; OpenStreetMap', maxZoom: 19, className: 'map-tiles',
+        }).addTo(map);
+        layer = L.layerGroup().addTo(map);
+      }
+      layer.clearLayers();
+      const bounds = [];
+      const pin = (pt, text, title) => {
+        L.marker([pt.lat, pt.lon], { icon: L.divIcon({ className: '', html: `<div class="pin">${text}</div>`, iconSize: [28, 28] }), zIndexOffset: 1000 })
+          .bindTooltip(`${title}<br>${pt.label}`).addTo(layer);
+        bounds.push([pt.lat, pt.lon]);
+      };
+      pin(this.result.points.start, 'S', 'Start');
+      pin(this.result.points.loods, 'L', 'Loods');
+
+      let n = 0;
+      for (const trip of this.scenario().trips) {
+        const c = this.color(trip.nr);
+        L.polyline(trip.geometry, { color: c, weight: 4, opacity: 0.8 }).addTo(layer);
+        for (const s of trip.stops) {
+          n++;
+          const o = this.result.orders.find(o => o.id === s.id);
+          L.marker([o.lat, o.lon], { icon: L.divIcon({ className: '', html: `<div class="stop-num" style="background:${c}">${n}</div>`, iconSize: [24, 24] }) })
+            .bindTooltip(`<b>${s.name}</b><br>${this.fmt(s.arrive)} · ${s.crates} krat(ten)<br>Rit ${trip.nr}`).addTo(layer);
+          bounds.push([o.lat, o.lon]);
+        }
+      }
+      setTimeout(() => { map.invalidateSize(); map.fitBounds(bounds, { padding: [30, 30] }); }, 50);
+    },
+  };
+}
+</script>
+</body>
+</html>
