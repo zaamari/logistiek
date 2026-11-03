@@ -76,6 +76,7 @@ def plan(orders_in: list[dict], settings: dict) -> dict:
         raise PlanError("Vul eerst het start- en loodsadres in bij Instellingen.")
 
     orders: list[Order] = []
+    known: list[dict | None] = []   # coördinaten die al bekend zijn (Houtenhak stuurt ze mee), anders opzoeken
     for i, row in enumerate(orders_in):
         address = (row.get("address") or "").strip()
         if not address:
@@ -94,12 +95,16 @@ def plan(orders_in: list[dict], settings: dict) -> dict:
             address=address, crates=crates, split=normalize_split(row.get("split")),
             window_start=ws, window_end=we, loc=len(orders) + 2,
         ))
+        lat, lon = row.get("lat"), row.get("lon")
+        valid = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lat, lon))
+        known.append({"lat": float(lat), "lon": float(lon), "label": address} if valid else None)
     if not orders:
         raise PlanError("Er zijn geen bestellingen met een adres.")
 
     addresses = [start_address, loods_address] + [o.address for o in orders]
+    given = [None, None] + known
     with ThreadPoolExecutor(max_workers=6) as pool:
-        points = list(pool.map(geo.geocode, addresses))
+        points = list(pool.map(lambda a, k: k or geo.geocode(a), addresses, given))
     problems = []
     for address, pt in zip(addresses, points):
         if pt is None:

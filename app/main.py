@@ -1,13 +1,20 @@
-"""Webserver: serveert de frontend en de API."""
+"""Webserver: serveert de frontend en de API.
+
+Lokaal (start.bat) is alles open. Online (Cloud Run, zie deploy.sh) mogen alleen beheerders van
+Houtenhak de planner gebruiken (zie auth.py), en alleen vanaf de adressen in ALLOWED_ORIGINS.
+"""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 
 from . import excel_io, planner
+from .auth import require_admin
 from .geo import DATA_DIR
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -25,7 +32,15 @@ DEFAULT_SETTINGS = {
     "time_limit": 5,
 }
 
-app = FastAPI(title="Leverplanner")
+app = FastAPI(title="Leverplanner", dependencies=[Depends(require_admin)])
+
+# Websites die de planner vanuit de browser mogen aanroepen, gescheiden door komma's (leeg = geen),
+# plus eventueel een patroon voor wisselende adressen (zoals de previews van Netlify).
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+ALLOWED_ORIGIN_REGEX = os.environ.get("ALLOWED_ORIGIN_REGEX") or None
+if ALLOWED_ORIGINS or ALLOWED_ORIGIN_REGEX:
+    app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_origin_regex=ALLOWED_ORIGIN_REGEX,
+                       allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"], max_age=3600)
 
 
 @app.get("/")

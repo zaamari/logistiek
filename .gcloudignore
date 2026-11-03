@@ -1,0 +1,8 @@
+# Wat deploy.sh níet naar Google stuurt: alleen Dockerfile, requirements.txt en app/ zijn nodig.
+.git/
+.gitignore
+data/
+__pycache__/
+*.xlsx
+start.bat
+deploy/

@@ -5,6 +5,7 @@ import json
 import math
 import re
 import threading
+import time
 from pathlib import Path
 
 import requests
@@ -16,7 +17,16 @@ OSRM_URL = "https://router.project-osrm.org"
 FALLBACK_KMH = 60
 FALLBACK_DETOUR = 1.35
 
+# De OSRM-demoserver vraagt maximaal 1 verzoek per seconde en een herkenbare User-Agent.
+OSRM_INTERVAL = 1.0
+OSRM_HEADERS = {"User-Agent": "Houtenhak-Leverplanner/1.0 (+https://houtenhak.nl)"}
+
 _lock = threading.Lock()
+_osrm_lock = threading.Lock()
+_osrm_last = 0.0
+# Al opgevraagde reistijden en routelijnen; zo kost opnieuw rekenen met dezelfde adressen geen verzoek.
+_durations: dict[tuple, int] = {}
+_geometries: dict[tuple, list] = {}
 
 
 def _read_cache() -> dict:
@@ -114,14 +124,37 @@ def _haversine_km(a: dict, b: dict) -> float:
     return 6371 * 2 * math.asin(math.sqrt(h))
 
 
+def _key(p: dict) -> tuple:
+    return round(p["lat"], 5), round(p["lon"], 5)
+
+
+def _osrm_get(path: str, params: dict, timeout: int) -> dict:
+    """Eén verzoek aan OSRM, nooit vaker dan eens per OSRM_INTERVAL (voor alle gebruikers samen)."""
+    global _osrm_last
+    with _osrm_lock:
+        wait = _osrm_last + OSRM_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            return requests.get(f"{OSRM_URL}/{path}", params=params, headers=OSRM_HEADERS, timeout=timeout).json()
+        finally:
+            _osrm_last = time.monotonic()
+
+
 def travel_matrix(points: list[dict]) -> tuple[list[list[int]], str]:
     """Reistijden in seconden tussen alle punten, plus de gebruikte bron."""
+    keys = [_key(p) for p in points]
+    if all((a, b) in _durations for a in keys for b in keys):
+        return [[_durations[a, b] for b in keys] for a in keys], "osrm"
     coords = ";".join(f"{p['lon']},{p['lat']}" for p in points)
     try:
-        data = requests.get(f"{OSRM_URL}/table/v1/driving/{coords}",
-                            params={"annotations": "duration"}, timeout=20).json()
+        data = _osrm_get(f"table/v1/driving/{coords}", {"annotations": "duration"}, timeout=20)
         if data.get("code") == "Ok":
-            return [[int(round(d or 0)) for d in row] for row in data["durations"]], "osrm"
+            matrix = [[int(round(d or 0)) for d in row] for row in data["durations"]]
+            for i, a in enumerate(keys):
+                for j, b in enumerate(keys):
+                    _durations[a, b] = matrix[i][j]
+            return matrix, "osrm"
     except (requests.RequestException, ValueError):
         pass
     matrix = [[int(_haversine_km(a, b) * FALLBACK_DETOUR / FALLBACK_KMH * 3600) for b in points] for a in points]
@@ -133,12 +166,16 @@ def route_geometry(points: list[dict]) -> list[list[float]]:
     straight = [[p["lat"], p["lon"]] for p in points]
     if len(points) < 2:
         return straight
+    key = tuple(_key(p) for p in points)
+    if key in _geometries:
+        return _geometries[key]
     coords = ";".join(f"{p['lon']},{p['lat']}" for p in points)
     try:
-        data = requests.get(f"{OSRM_URL}/route/v1/driving/{coords}",
-                            params={"overview": "simplified", "geometries": "geojson"}, timeout=15).json()
+        data = _osrm_get(f"route/v1/driving/{coords}", {"overview": "simplified", "geometries": "geojson"}, timeout=15)
         if data.get("code") == "Ok":
-            return [[lat, lon] for lon, lat in data["routes"][0]["geometry"]["coordinates"]]
+            line = [[lat, lon] for lon, lat in data["routes"][0]["geometry"]["coordinates"]]
+            _geometries[key] = line
+            return line
     except (requests.RequestException, ValueError):
         pass
     return straight

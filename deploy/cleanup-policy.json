@@ -1,0 +1,12 @@
+[
+  {
+    "name": "bewaar-laatste-2",
+    "action": { "type": "Keep" },
+    "mostRecentVersions": { "keepCount": 2 }
+  },
+  {
+    "name": "verwijder-oude",
+    "action": { "type": "Delete" },
+    "condition": { "tagState": "ANY", "olderThan": "1d" }
+  }
+]
