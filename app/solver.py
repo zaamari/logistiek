@@ -1,11 +1,17 @@
 """Rekenkern: routeplanning met maximaal `capacity` kratten per rit.
 
-Model (Google OR-Tools, één voertuig):
+Model (Google OR-Tools, één voertuig per leverdag):
 - knoop 0 = startlocatie (je vertrekt met een volle lading)
 - knoop 1 = loods (eindpunt van de dag)
 - klantknopen: één knoop per bestelling, of één knoop per krat als
   splitsen mag (zo kan een bestelling over meerdere ritten verdeeld worden)
 - laadknopen: optionele bezoeken aan de loods om bij te laden
+
+Over meerdere dagen (bijv. zaterdag en zondag) is elke dag een eigen voertuig
+dat om `first_arrival` begint. Een bestelling met een vaste dag mag alleen op
+die dag; de rest verdeelt de planner zo dat de dagen ongeveer even lang zijn
+(kosten op de langste dag, BALANCE_WEIGHT). Kratten van één bestelling blijven
+altijd op dezelfde dag.
 
 Alle tijden zijn in seconden sinds middernacht.
 De rit van start naar de eerste klant telt niet mee in de werktijd: je
@@ -24,6 +30,7 @@ LOODS_LOC = 1
 
 LATE_PENALTY = 1000   # kosten per seconde te laat binnen een tijdvenster
 SPAN_WEIGHT = 100     # kosten per seconde werktijd (eerste klant -> loods)
+BALANCE_WEIGHT = 100  # bij meerdere dagen: kosten per seconde van de langste dag
 
 
 @dataclass
@@ -36,6 +43,7 @@ class Order:
     window_start: int | None = None
     window_end: int | None = None
     loc: int = 0                     # index in de reistijdmatrix
+    day: int | None = None           # bij meerdere dagen: verplichte dag (index), None = maakt niet uit
 
 
 @dataclass
@@ -113,10 +121,19 @@ class _Model:
             return self.p.unload_first
         return unload_time(self.demand[i], self.p)
 
-    def sequence_to_nodes(self, sequence: list[tuple]) -> list[int] | None:
-        """Zet een eerdere planning (stops/laadmomenten) om naar knopen van dit model."""
+    def sequences_to_routes(self, sequences: list[list[tuple]]) -> list[list[int]] | None:
+        """Zet een eerdere planning (stops/laadmomenten, per dag) om naar knopen van dit model."""
         used = {oi: 0 for oi in range(len(self.orders))}
         reloads = iter(self.reload_nodes)
+        routes = []
+        for sequence in sequences:
+            nodes = self._sequence_nodes(sequence, used, reloads)
+            if nodes is None:
+                return None
+            routes.append(nodes)
+        return routes
+
+    def _sequence_nodes(self, sequence: list[tuple], used: dict, reloads) -> list[int] | None:
         nodes = []
         for item in sequence:
             if item[0] == "reload":
@@ -142,13 +159,14 @@ class _Model:
 
 
 def solve(orders: list[Order], travel: list[list[int]], p: Params, split_ids: set[str],
-          initial: list[tuple] | None = None) -> dict:
+          initial: list[list[tuple]] | None = None, days: int = 1) -> list[dict]:
+    """Eén planning per dag (een lijst met `days` planningen)."""
     if not orders:
         raise ValueError("Geen bestellingen om te plannen.")
     m = _Model(orders, travel, p, split_ids)
     n = len(m.kind)
 
-    manager = pywrapcp.RoutingIndexManager(n, 1, [0], [1])
+    manager = pywrapcp.RoutingIndexManager(n, days, [START_LOC] * days, [LOODS_LOC] * days)
     routing = pywrapcp.RoutingModel(manager)
 
     def cost_cb(a, b):
@@ -164,14 +182,18 @@ def solve(orders: list[Order], travel: list[list[int]], p: Params, split_ids: se
 
     routing.AddDimension(routing.RegisterTransitCallback(time_cb), 24 * 3600, 48 * 3600, False, "Time")
     time_dim = routing.GetDimensionOrDie("Time")
-    time_dim.CumulVar(routing.Start(0)).SetRange(p.first_arrival, p.first_arrival)
+    for v in range(days):
+        time_dim.CumulVar(routing.Start(v)).SetRange(p.first_arrival, p.first_arrival)
     time_dim.SetSpanCostCoefficientForAllVehicles(SPAN_WEIGHT)
+    if days > 1:
+        time_dim.SetGlobalSpanCostCoefficient(BALANCE_WEIGHT)  # elke dag begint gelijk: dit is de langste dag
 
     # Laadruimte: cumul = kratten afgeleverd sinds laatste keer laden (max capacity).
     # Een laadknoop trekt `capacity` af; de slack maakt bijladen van een halflege bus mogelijk.
     routing.AddDimension(routing.RegisterUnaryTransitCallback(demand_cb), p.capacity, p.capacity, True, "Load")
     load_dim = routing.GetDimensionOrDie("Load")
-    load_dim.SlackVar(routing.Start(0)).SetValue(0)
+    for v in range(days):
+        load_dim.SlackVar(routing.Start(v)).SetValue(0)
 
     for node in range(2, n):
         index = manager.NodeToIndex(node)
@@ -180,6 +202,12 @@ def solve(orders: list[Order], travel: list[list[int]], p: Params, split_ids: se
             continue
         load_dim.SlackVar(index).SetValue(0)
         o = orders[m.order[node]]
+        if days > 1:
+            if o.day is not None:
+                routing.VehicleVar(index).SetValue(o.day)
+            first = manager.NodeToIndex(m.order_nodes[m.order[node]][0])
+            if index != first:  # kratten van één bestelling op dezelfde dag
+                routing.solver().Add(routing.VehicleVar(index) == routing.VehicleVar(first))
         if o.window_start is not None:
             time_dim.CumulVar(index).SetMin(o.window_start)
         if o.window_end is not None:
@@ -192,10 +220,10 @@ def solve(orders: list[Order], travel: list[list[int]], p: Params, split_ids: se
 
     solution = None
     if initial:
-        nodes = m.sequence_to_nodes(initial)
-        if nodes:
+        routes = m.sequences_to_routes(initial)
+        if routes and len(routes) == days:
             routing.CloseModelWithParameters(params)
-            start = routing.ReadAssignmentFromRoutes([[manager.NodeToIndex(x) for x in nodes]], True)
+            start = routing.ReadAssignmentFromRoutes([[manager.NodeToIndex(x) for x in nodes] for nodes in routes], True)
             if start:
                 solution = routing.SolveFromAssignmentWithParameters(start, params)
     if solution is None:
@@ -203,12 +231,15 @@ def solve(orders: list[Order], travel: list[list[int]], p: Params, split_ids: se
     if solution is None:
         raise RuntimeError("Geen planning gevonden.")
 
-    nodes = []
-    index = routing.Start(0)
-    while not routing.IsEnd(index):
-        nodes.append(manager.IndexToNode(index))
-        index = solution.Value(routing.NextVar(index))
-    return _itinerary(m, nodes[1:])
+    plans = []
+    for v in range(days):
+        nodes = []
+        index = routing.Start(v)
+        while not routing.IsEnd(index):
+            nodes.append(manager.IndexToNode(index))
+            index = solution.Value(routing.NextVar(index))
+        plans.append(_itinerary(m, nodes[1:]))
+    return plans
 
 
 def _itinerary(m: _Model, nodes: list[int]) -> dict:
@@ -233,6 +264,9 @@ def _itinerary(m: _Model, nodes: list[int]) -> dict:
     while cleaned and cleaned[-1][0] == "reload":
         cleaned.pop()
     sequence = cleaned
+    if not sequence:  # een dag zonder bestellingen (bij meerdere dagen)
+        return {"trips": [], "sequence": [], "departure": None, "finish": None, "work_time": 0,
+                "drive_time": 0, "reloads": 0, "split_orders": [], "late": []}
 
     trips = [{"from": "start", "depart": None, "stops": []}]
     prev_loc = START_LOC

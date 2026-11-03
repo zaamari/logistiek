@@ -69,7 +69,12 @@ def _maps_url(addresses: list[str]) -> str:
 
 
 def plan(orders_in: list[dict], settings: dict) -> dict:
+    """Planning voor één dag, of met `settings["days"]` (bijv. ["zaterdag", "zondag"]) verdeeld over
+    meerdere dagen. Een bestelling met `day` gaat dan verplicht op die dag."""
     p = _params(settings)
+    day_names = [str(d).strip().lower() for d in (settings.get("days") or [])] or [None]
+    if len(day_names) > 3 or len(set(day_names)) != len(day_names):
+        raise PlanError("Kies één, twee of drie verschillende dagen.")
     start_address = (settings.get("start_address") or "").strip()
     loods_address = (settings.get("loods_address") or "").strip()
     if not start_address or not loods_address:
@@ -90,10 +95,14 @@ def plan(orders_in: list[dict], settings: dict) -> dict:
         ws, we = parse_time(row.get("window_start")), parse_time(row.get("window_end"))
         if ws is not None and we is not None and we <= ws:
             raise PlanError(f"Rij {i + 1}: tijdvenster eindigt vóór het begint.")
+        day = str(row.get("day") or "").strip().lower() or None
+        if day is not None and day not in day_names:
+            raise PlanError(f"Rij {i + 1} ({row.get('name') or address}): dag '{day}' hoort niet bij deze planning.")
         orders.append(Order(
             id=str(row.get("id") or i), name=(row.get("name") or "").strip() or address,
             address=address, crates=crates, split=normalize_split(row.get("split")),
             window_start=ws, window_end=we, loc=len(orders) + 2,
+            day=day_names.index(day) if day is not None and len(day_names) > 1 else None,
         ))
         lat, lon = row.get("lat"), row.get("lon")
         valid = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lat, lon))
@@ -124,15 +133,19 @@ def plan(orders_in: list[dict], settings: dict) -> dict:
 
     ids_yes = {o.id for o in orders if o.split == "ja"}
     ids_maybe = {o.id for o in orders if o.split != "nee"}
-    nosplit = solve(orders, travel, p, ids_yes)
+    days = len(day_names)
+    nosplit = solve(orders, travel, p, ids_yes, days=days)
     same = ids_yes == ids_maybe
-    split = nosplit if same else solve(orders, travel, p, ids_maybe, initial=nosplit["sequence"])
-    if split["finish"] >= nosplit["finish"]:
+    split = nosplit if same else solve(orders, travel, p, ids_maybe, initial=[d["sequence"] for d in nosplit], days=days)
+    # Vergelijken op de werktijd van alle dagen samen (vanaf de eerste klant tot terug in de loods).
+    total = lambda plans: sum(d["finish"] - p.first_arrival for d in plans if d["finish"] is not None)
+    if total(split) >= total(nosplit):
         split = nosplit
 
-    saving = nosplit["finish"] - split["finish"]
+    saving = total(nosplit) - total(split)
     by_id = {o.id: o for o in orders}
-    ask = [oid for oid in split["split_orders"] if oid not in ids_yes and by_id[oid].crates <= p.capacity]
+    split_orders = [oid for d in split for oid in d["split_orders"]]
+    ask = [oid for oid in split_orders if oid not in ids_yes and by_id[oid].crates <= p.capacity]
     if same:
         message = "Bij alle bestellingen is al bekend of splitsen mag; er is één planning."
     elif not ask:
@@ -153,17 +166,25 @@ def plan(orders_in: list[dict], settings: dict) -> dict:
             "label": points[o.loc]["label"], "lat": points[o.loc]["lat"], "lon": points[o.loc]["lon"],
         } for o in orders],
         "scenarios": {
-            "nosplit": _present(nosplit, orders, points, p, start_address, loods_address),
-            "split": _present(split, orders, points, p, start_address, loods_address),
+            "nosplit": _scenario(nosplit, day_names, orders, points, p, start_address, loods_address),
+            "split": _scenario(split, day_names, orders, points, p, start_address, loods_address),
         },
         "compare": {
             "same": same or split is nosplit,
             "saving": _minutes(saving),
-            "reloads_saved": nosplit["reloads"] - split["reloads"],
+            "reloads_saved": sum(d["reloads"] for d in nosplit) - sum(d["reloads"] for d in split),
             "ask": ask,
             "message": message,
         },
     }
+
+
+def _scenario(plans: list[dict], day_names: list, orders, points, p, start_address, loods_address) -> dict:
+    """Eén dag: de planning zelf (zoals altijd). Meerdere dagen: {"days": [planning per dag, met "day"]}."""
+    presented = [_present(d, orders, points, p, start_address, loods_address) for d in plans]
+    if len(presented) == 1:
+        return presented[0]
+    return {"days": [{"day": name, **d} for name, d in zip(day_names, presented)]}
 
 
 def _suggest_window(arrive: int, earliest: int) -> tuple[int, int]:
@@ -217,5 +238,5 @@ def _present(result: dict, orders: list[Order], points: list[dict], p: Params,
         "reloads": result["reloads"],
         "split_orders": result["split_orders"],
         "late": result["late"],
-        "min_loads": math.ceil(sum(o.crates for o in orders) / p.capacity),
+        "min_loads": math.ceil(sum(t["load"] for t in trips) / p.capacity),
     }
